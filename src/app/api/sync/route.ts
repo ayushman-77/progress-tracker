@@ -7,7 +7,8 @@ export const dynamic = 'force-dynamic';
 
 export async function POST() {
   try {
-    const users = db.prepare('SELECT * FROM users').all() as any[];
+    const usersResult = await db.execute('SELECT * FROM users');
+    const users = usersResult.rows as any[];
     const date = new Date().toISOString().split('T')[0];
     
     const results = [];
@@ -17,7 +18,8 @@ export async function POST() {
       const tufStats = await getTufStats(user.tuf_username);
       
       if (leetcodeStats || tufStats) {
-        const stmt = db.prepare(`
+        await db.execute({
+          sql: `
           INSERT INTO progress_snapshots (
             user_id, date, 
             leetcode_easy, leetcode_medium, leetcode_hard, 
@@ -32,13 +34,13 @@ export async function POST() {
             tuf_easy = excluded.tuf_easy,
             tuf_medium = excluded.tuf_medium,
             tuf_hard = excluded.tuf_hard
-        `);
-        
-        stmt.run(
-          user.id, date,
-          leetcodeStats?.easy || 0, leetcodeStats?.medium || 0, leetcodeStats?.hard || 0,
-          tufStats?.total || 0, tufStats?.easy || 0, tufStats?.medium || 0, tufStats?.hard || 0
-        );
+        `,
+          args: [
+            user.id, date,
+            leetcodeStats?.easy || 0, leetcodeStats?.medium || 0, leetcodeStats?.hard || 0,
+            tufStats?.total || 0, tufStats?.easy || 0, tufStats?.medium || 0, tufStats?.hard || 0
+          ]
+        });
         
         results.push({ user: user.name, status: 'synced', leetcodeStats, tufStats });
       } else {
@@ -54,22 +56,29 @@ export async function POST() {
 
 export async function GET(req: Request) {
   try {
-    const users = db.prepare('SELECT * FROM users').all();
+    const usersResult = await db.execute('SELECT * FROM users');
+    const users = usersResult.rows as any[];
     const date = new Date().toISOString().split('T')[0];
-    const yesterdayDate = new Date(Date.now() - 86400000).toISOString().split('T')[0];
 
-    const data = users.map((user: any) => {
-      const todayStats = db.prepare('SELECT * FROM progress_snapshots WHERE user_id = ? ORDER BY date DESC LIMIT 1').get(user.id) || null;
+    const data = await Promise.all(users.map(async (user: any) => {
+      const todayStatsResult = await db.execute({
+        sql: 'SELECT * FROM progress_snapshots WHERE user_id = ? ORDER BY date DESC LIMIT 1',
+        args: [user.id]
+      });
+      const todayStats = todayStatsResult.rows[0] || null;
       
-      // Let's get the most recent past stats before today
-      const pastStats = db.prepare('SELECT * FROM progress_snapshots WHERE user_id = ? AND date < ? ORDER BY date DESC LIMIT 1').get(user.id, date) || null;
+      const pastStatsResult = await db.execute({
+        sql: 'SELECT * FROM progress_snapshots WHERE user_id = ? AND date < ? ORDER BY date DESC LIMIT 1',
+        args: [user.id, date]
+      });
+      const pastStats = pastStatsResult.rows[0] || null;
       
       return {
         ...user,
         today: todayStats,
         past: pastStats
       };
-    });
+    }));
     
     return NextResponse.json(data);
   } catch (err: any) {

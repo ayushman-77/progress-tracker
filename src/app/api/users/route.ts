@@ -4,8 +4,12 @@ import { getLeetcodeStats } from '@/lib/leetcode';
 import { getTufStats } from '@/lib/tuf';
 
 export async function GET() {
-  const users = db.prepare('SELECT * FROM users').all();
-  return NextResponse.json(users);
+  try {
+    const result = await db.execute('SELECT * FROM users');
+    return NextResponse.json(result.rows);
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
 }
 
 export async function POST(req: Request) {
@@ -16,17 +20,40 @@ export async function POST(req: Request) {
     }
 
     // Fetch initial baseline stats
-    const lcStats = await getLeetcodeStats(leetcode_username);
+    const leetcodeStats = await getLeetcodeStats(leetcode_username);
     const tufStats = await getTufStats(tuf_username);
-    const initialLcTotal = lcStats ? lcStats.total : 0;
-    const initialTufTotal = tufStats ? tufStats.total : 0;
+    const leetcodeTotal = (leetcodeStats?.easy || 0) + (leetcodeStats?.medium || 0) + (leetcodeStats?.hard || 0);
+    const tufTotal = tufStats?.total || 0;
 
-    const stmt = db.prepare(`
-      INSERT INTO users (name, leetcode_username, tuf_username, initial_lc_total, initial_tuf_total)
-      VALUES (?, ?, ?, ?, ?)
-    `);
-    const info = stmt.run(name, leetcode_username, tuf_username, initialLcTotal, initialTufTotal);
-    return NextResponse.json({ id: info.lastInsertRowid, name, leetcode_username, tuf_username, initialLcTotal, initialTufTotal });
+    const result = await db.execute({
+      sql: `
+        INSERT INTO users (name, leetcode_username, tuf_username, initial_lc_total, initial_tuf_total)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      args: [name, leetcode_username, tuf_username, leetcodeTotal, tufTotal]
+    });
+    
+    // Also create the first snapshot
+    const date = new Date().toISOString().split('T')[0];
+    const userId = Number(result.lastInsertRowid);
+    
+    await db.execute({
+      sql: `
+        INSERT INTO progress_snapshots (
+          user_id, date, 
+          leetcode_easy, leetcode_medium, leetcode_hard, 
+          tuf_total, tuf_easy, tuf_medium, tuf_hard
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
+        userId, date,
+        leetcodeStats?.easy || 0, leetcodeStats?.medium || 0, leetcodeStats?.hard || 0,
+        tufStats?.total || 0, tufStats?.easy || 0, tufStats?.medium || 0, tufStats?.hard || 0
+      ]
+    });
+
+    return NextResponse.json({ success: true, id: userId });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
